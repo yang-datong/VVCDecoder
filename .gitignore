@@ -1,0 +1,53 @@
+vvdec-3.2.0/
+output_first_frame.pgm
+ref_000.pgm
+
+# Mac OS
+*.DS_Store
+
+*.yuv
+*.bmp
+
+# CMakeFiles
+compile_commands.json
+/.cache
+/build
+/CMakeFiles
+CMakeLists.txt
+CMakeCache.txt
+Session.vim
+cmake_install.cmake
+Makefile
+
+# Prerequisites
+*.d
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
