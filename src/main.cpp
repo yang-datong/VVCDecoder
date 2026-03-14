@@ -3,6 +3,9 @@
 #include "GOP.hpp"
 #include "Image.hpp"
 #include "Nalu.hpp"
+#include "VvcCabacReader.hpp"
+#include "VvcMiniParser.hpp"
+#include "VvcSplitProbe.hpp"
 #include <array>
 #include <cstdlib>
 #include <iomanip>
@@ -29,6 +32,11 @@ struct VvcBitstreamSummary {
   int total_nalus = 0;
   int vcl_nalus = 0;
   int non_vcl_nalus = 0;
+  int parsed_sps = 0;
+  int parsed_pps = 0;
+  int parsed_picture_headers = 0;
+  int parsed_slice_headers = 0;
+  int parsed_pictures = 0;
   std::array<int, VVC_NAL_UNIT_INVALID + 1> type_counts = {};
 };
 
@@ -45,7 +53,21 @@ static int parseVvcBitstream(const string &filePath) {
   RET(result);
 
   VvcBitstreamSummary summary;
+  VvcMiniParser parser;
+  std::array<VvcSpsState, 16> spss = {};
+  std::array<VvcPpsState, 64> ppss = {};
+  VvcPictureHeaderState active_picture_header;
+  int prev_tid0_poc = 0;
+  bool prev_tid0_poc_valid = false;
+  int last_picture_poc = 0;
+  bool last_picture_poc_valid = false;
   int number = 0;
+  int parsed_vcl_count = 0;
+  int max_parsed_vcl = 0;
+  if (const char *max_vcl_env = findMaxVclEnv()) {
+    const int parsed = std::atoi(max_vcl_env);
+    if (parsed > 0) max_parsed_vcl = parsed;
+  }
 
   while (true) {
     Nalu nalu;
@@ -86,9 +108,166 @@ static int parseVvcBitstream(const string &filePath) {
         nalu.nuh_temporal_id_plus1 == 0) {
       cout << " header_warning";
     }
+
+    BitStream bitStream(rbsp.buf, rbsp.len);
+    switch (nalu.nal_unit_type) {
+    case VVC_NAL_UNIT_SPS: {
+      VvcSpsState sps;
+      if (parser.parseSps(bitStream, sps) != 0) {
+        cerr << "VVC SPS parse error on NAL[" << number
+             << "]: " << parser.lastError() << endl;
+        reader.close();
+        return -1;
+      }
+      spss[sps.sps_id] = sps;
+      summary.parsed_sps++;
+      cout << " sps_id=" << sps.sps_id << " max=" << sps.max_pic_width_in_luma_samples
+           << "x" << sps.max_pic_height_in_luma_samples
+           << " ctu=" << sps.ctu_size << " poc_bits=" << sps.bits_for_poc
+           << " chroma=" << sps.chroma_format_idc
+           << " min_qt_i=" << sps.min_qt_sizes[0]
+           << " max_mtt_i=" << sps.max_mtt_depths[0]
+           << " lfnst=" << static_cast<int>(sps.lfnst_enabled_flag)
+           << " mip=" << static_cast<int>(sps.mip_enabled_flag)
+           << " mrl=" << static_cast<int>(sps.mrl_enabled_flag)
+           << " isp=" << static_cast<int>(sps.isp_enabled_flag);
+      break;
+    }
+    case VVC_NAL_UNIT_PPS: {
+      VvcPpsState pps;
+      if (parser.parsePps(bitStream, spss, pps) != 0) {
+        cerr << "VVC PPS parse error on NAL[" << number
+             << "]: " << parser.lastError() << endl;
+        reader.close();
+        return -1;
+      }
+      ppss[pps.pps_id] = pps;
+      summary.parsed_pps++;
+      cout << " pps_id=" << pps.pps_id << " sps_id=" << pps.sps_id
+           << " pic=" << pps.pic_width_in_luma_samples << "x"
+           << pps.pic_height_in_luma_samples
+           << " no_pic_partition=" << static_cast<int>(pps.no_pic_partition_flag);
+      break;
+    }
+    case VVC_NAL_UNIT_PH: {
+      VvcPictureHeaderState picture_header;
+      if (parser.parsePictureHeader(bitStream, spss, ppss, picture_header) != 0) {
+        cerr << "VVC picture header parse error on NAL[" << number
+             << "]: " << parser.lastError() << endl;
+        reader.close();
+        return -1;
+      }
+      active_picture_header = picture_header;
+      summary.parsed_picture_headers++;
+      cout << " ph pps_id=" << picture_header.pps_id
+           << " sps_id=" << picture_header.sps_id
+           << " poc_lsb=" << picture_header.poc_lsb
+           << " inter=" << static_cast<int>(picture_header.inter_slice_allowed_flag)
+           << " intra=" << static_cast<int>(picture_header.intra_slice_allowed_flag);
+      break;
+    }
+    default:
+      if (Nalu::isVvcSliceNaluType(nalu.nal_unit_type)) {
+        VvcPictureHeaderState parsed_picture_header;
+        VvcFrameHeaderSummary frame_summary;
+        if (parser.parseSliceHeader(
+                nalu, bitStream, spss, ppss,
+                prev_tid0_poc_valid ? prev_tid0_poc : 0,
+                active_picture_header.valid ? &active_picture_header : nullptr,
+                parsed_picture_header, frame_summary) != 0) {
+          cerr << "VVC slice header parse error on NAL[" << number
+               << "]: " << parser.lastError() << endl;
+          reader.close();
+          return -1;
+        }
+
+        active_picture_header = parsed_picture_header;
+        summary.parsed_slice_headers++;
+        parsed_vcl_count++;
+
+        if (!last_picture_poc_valid || frame_summary.poc != last_picture_poc) {
+          last_picture_poc = frame_summary.poc;
+          last_picture_poc_valid = true;
+          summary.parsed_pictures++;
+        }
+
+        if (nalu.TemporalId == 0) {
+          prev_tid0_poc = frame_summary.poc;
+          prev_tid0_poc_valid = true;
+        }
+
+        if (frame_summary.payload_rbsp_byte_offset < 0 ||
+            frame_summary.payload_rbsp_byte_offset >= rbsp.len) {
+          cerr << "VVC CABAC payload offset error on NAL[" << number << "]"
+               << ": rbsp payload offset="
+               << frame_summary.payload_rbsp_byte_offset
+               << ", rbsp len=" << rbsp.len << endl;
+          reader.close();
+          return -1;
+        }
+
+        VvcCabacReader cabac_reader;
+        const uint8_t *cabac_payload =
+            rbsp.buf + frame_summary.payload_rbsp_byte_offset;
+        const int cabac_payload_len =
+            rbsp.len - frame_summary.payload_rbsp_byte_offset;
+        if (cabac_reader.init(cabac_payload, cabac_payload_len) != 0) {
+          cerr << "VVC CABAC init error on NAL[" << number
+               << "]: " << cabac_reader.lastError() << endl;
+          reader.close();
+          return -1;
+        }
+
+        VvcSplitProbeResult split_probe_result;
+        bool split_probe_ok = false;
+        std::string split_probe_error;
+        if (frame_summary.slice_type == I_SLICE &&
+            frame_summary.sps_id >= 0 &&
+            frame_summary.sps_id < static_cast<int>(spss.size()) &&
+            spss[frame_summary.sps_id].valid) {
+          VvcSplitProbe split_probe;
+          if (split_probe.probeFirstCuSplitPath(
+                  cabac_reader, spss[frame_summary.sps_id], parsed_picture_header,
+                  frame_summary.slice_type, frame_summary.slice_qp_y,
+                  split_probe_result) == 0) {
+            split_probe_ok = split_probe_result.valid;
+          } else {
+            split_probe_error = split_probe.lastError();
+          }
+        }
+
+        cout << " pps_id=" << frame_summary.pps_id
+             << " sps_id=" << frame_summary.sps_id
+             << " pic=" << frame_summary.width << "x" << frame_summary.height
+             << " ph_in_sh="
+             << static_cast<int>(frame_summary.picture_header_in_slice_header_flag)
+             << " poc_lsb=" << frame_summary.poc_lsb
+             << " poc=" << frame_summary.poc
+             << " slice=" << VvcMiniParser::sliceTypeToString(frame_summary.slice_type)
+             << " qp=" << frame_summary.slice_qp_y
+             << " depq=" << static_cast<int>(frame_summary.dep_quant_used_flag)
+             << " inter="
+             << static_cast<int>(frame_summary.inter_slice_allowed_flag)
+             << " intra="
+             << static_cast<int>(frame_summary.intra_slice_allowed_flag)
+             << " noprior="
+             << static_cast<int>(frame_summary.no_output_of_prior_pics_flag)
+             << " payload_byte=" << frame_summary.payload_byte_offset;
+        if (split_probe_ok) {
+          cout << " split_path=" << split_probe_result.path
+               << " split_leaf=" << split_probe_result.leaf_width << "x"
+               << split_probe_result.leaf_height
+               << " split_bins=" << split_probe_result.decisions;
+        } else if (!split_probe_error.empty()) {
+          cout << " split_probe_err=" << split_probe_error;
+        }
+      }
+      break;
+    }
     cout << endl;
 
     if (result == 0) break;
+    if (max_parsed_vcl > 0 && parsed_vcl_count >= max_parsed_vcl) break;
   }
 
   cout << endl;
@@ -96,6 +275,12 @@ static int parseVvcBitstream(const string &filePath) {
   cout << "  total_nalus: " << summary.total_nalus << endl;
   cout << "  vcl_nalus: " << summary.vcl_nalus << endl;
   cout << "  non_vcl_nalus: " << summary.non_vcl_nalus << endl;
+  cout << "  parsed_sps: " << summary.parsed_sps << endl;
+  cout << "  parsed_pps: " << summary.parsed_pps << endl;
+  cout << "  parsed_picture_headers: " << summary.parsed_picture_headers
+       << endl;
+  cout << "  parsed_slice_headers: " << summary.parsed_slice_headers << endl;
+  cout << "  parsed_pictures: " << summary.parsed_pictures << endl;
   cout << "  type_histogram:" << endl;
   for (size_t i = 0; i < summary.type_counts.size(); ++i) {
     if (summary.type_counts[i] == 0) continue;
