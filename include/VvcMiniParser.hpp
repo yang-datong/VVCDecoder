@@ -25,8 +25,10 @@ struct VvcSpsState {
   int num_extra_sh_bytes = 0;
   std::vector<bool> extra_ph_bit_present_flags;
   std::vector<bool> extra_sh_bit_present_flags;
+  int bit_depth = 8;
   int qp_bd_offset = 0;
   int max_tb_size = 32;
+  int log2_max_transform_skip_block_size = 2;
   std::array<int, 3> min_qt_sizes = {};
   std::array<int, 3> max_mtt_depths = {};
   std::array<int, 3> max_bt_sizes = {};
@@ -62,6 +64,7 @@ struct VvcSpsState {
   bool isp_enabled_flag = false;
   bool mrl_enabled_flag = false;
   bool mip_enabled_flag = false;
+  bool cclm_enabled_flag = false;
   bool scaling_list_enabled_flag = false;
   bool dep_quant_enabled_flag = false;
   bool sign_data_hiding_enabled_flag = false;

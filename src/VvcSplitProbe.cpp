@@ -6,6 +6,8 @@
 
 namespace {
 
+constexpr int kMaxTuSizeForProfile = 64;
+
 enum class SplitKind {
   kCtuLevel,
   kNone,
@@ -84,6 +86,8 @@ void deriveCanSplit(const SplitNodeState &node, const SplitConstraints &cons,
                     bool &can_th, bool &can_tv) {
   can_no = can_qt = can_bh = can_bv = can_th = can_tv = true;
 
+  const bool allow_mode_bt = true;
+  const bool allow_mode_tt = true;
   bool can_btt = node.mt_depth < (cons.max_mtt_depth + node.implicit_bt_depth);
   if (node.last_split != SplitKind::kCtuLevel &&
       node.last_split != SplitKind::kQuad) {
@@ -107,11 +111,20 @@ void deriveCanSplit(const SplitNodeState &node, const SplitConstraints &cons,
     can_bh = false;
     can_bv = false;
   } else {
+    can_bh &= allow_mode_bt;
+    can_bv &= allow_mode_bt;
     can_bh &= node.height > cons.min_bt_size && node.height <= cons.max_bt_size;
+    can_bh &= node.width <= kMaxTuSizeForProfile ||
+              node.height > kMaxTuSizeForProfile;
     can_bv &= node.width > cons.min_bt_size && node.width <= cons.max_bt_size;
+    can_bv &= node.width > kMaxTuSizeForProfile ||
+              node.height <= kMaxTuSizeForProfile;
   }
 
-  if (node.width > cons.max_tt_size || node.height > cons.max_tt_size) {
+  if (node.width > cons.max_tt_size || node.height > cons.max_tt_size ||
+      !allow_mode_tt ||
+      !(node.width <= kMaxTuSizeForProfile &&
+        node.height <= kMaxTuSizeForProfile)) {
     can_th = false;
     can_tv = false;
     return;
@@ -188,6 +201,15 @@ int VvcSplitProbe::probeFirstCuSplitPath(VvcCabacReader &cabac,
   node.width = sps.ctu_size;
   node.height = sps.ctu_size;
   node.last_split = SplitKind::kCtuLevel;
+  if (sps.dual_tree_intra_flag && picture.gdr_or_irap_pic_flag) {
+    while (node.width > kMaxTuSizeForProfile &&
+           node.height > kMaxTuSizeForProfile) {
+      node.width >>= 1;
+      node.height >>= 1;
+      node.qt_depth++;
+      node.last_split = SplitKind::kQuad;
+    }
+  }
 
   std::vector<std::string> path_nodes;
   int decision_count = 0;

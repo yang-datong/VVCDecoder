@@ -36,6 +36,9 @@ class VvcCabacReader {
   int decodeBin(VvcCabacContextModel &ctx);
 
   int decodeBypass();
+  uint32_t decodeBinsEP(int num_bins);
+  uint32_t decodeRemAbsEP(unsigned go_rice_par, unsigned cutoff,
+                          int max_log2_tr_dynamic_range);
   int decodeTerminate();
 
   int bytesConsumed() const;
@@ -52,8 +55,9 @@ class VvcCabacReader {
   const uint8_t *m_ptr = nullptr;
   const uint8_t *m_end = nullptr;
 
-  int initFrom(const uint8_t *buf, const uint8_t *end);
+ int initFrom(const uint8_t *buf, const uint8_t *end);
   uint32_t readByte();
+  uint32_t readByteFlag(bool flag);
   void setError(const std::string &error) { m_last_error = error; }
 };
 

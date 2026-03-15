@@ -184,6 +184,24 @@ int deriveNumRefIdxActive(int pps_default_active, int rpl_entries,
   return std::min(rpl_entries, pps_default_active);
 }
 
+int deriveSingleSliceEntryPointCount(const VvcSpsState &sps,
+                                     const VvcPpsState &pps) {
+  if (!sps.entry_point_offsets_present_flag) return 0;
+  if (!pps.no_pic_partition_flag) return -1;
+
+  const int pic_width_in_ctu =
+      (pps.pic_width_in_luma_samples + sps.ctu_size - 1) / sps.ctu_size;
+  const int pic_height_in_ctu =
+      (pps.pic_height_in_luma_samples + sps.ctu_size - 1) / sps.ctu_size;
+  if (pic_width_in_ctu <= 0 || pic_height_in_ctu <= 0) return -1;
+
+  int num_entry_points = 0;
+  if (sps.entropy_coding_sync_enabled_flag) {
+    num_entry_points += std::max(0, pic_height_in_ctu - 1);
+  }
+  return num_entry_points;
+}
+
 bool parsePictureHeaderPayload(
     VvcBitReader &reader, const std::array<VvcSpsState, 16> &spss,
     const std::array<VvcPpsState, 64> &ppss, VvcPictureHeaderState &picture,
@@ -547,6 +565,20 @@ bool parseSliceHeaderTail(VvcBitReader &reader, const Nalu &nalu,
     return setUnsupported(error, "pps_slice_header_extension_present_flag=1");
   }
 
+  if (sps.entry_point_offsets_present_flag) {
+    const int num_entry_points = deriveSingleSliceEntryPointCount(sps, pps);
+    if (num_entry_points < 0) {
+      return setUnsupported(
+          error, "entry point offsets with partitioned picture/slice");
+    }
+    if (num_entry_points > 0) {
+      const int sh_entry_offset_len_minus1 = static_cast<int>(reader.uvlc());
+      for (int idx = 0; idx < num_entry_points; ++idx) {
+        (void)reader.code(sh_entry_offset_len_minus1 + 1);
+      }
+    }
+  }
+
   if (!consumeByteAlignment(reader, error)) {
     return false;
   }
@@ -604,6 +636,7 @@ int VvcMiniParser::parseSps(BitStream &bs, VvcSpsState &sps) {
   }
 
   const int sps_bitdepth_minus8 = static_cast<int>(reader.uvlc());
+  sps.bit_depth = 8 + sps_bitdepth_minus8;
   sps.qp_bd_offset = 6 * sps_bitdepth_minus8;
   sps.entropy_coding_sync_enabled_flag = reader.flag() != 0;
   sps.entry_point_offsets_present_flag = reader.flag() != 0;
@@ -693,7 +726,8 @@ int VvcMiniParser::parseSps(BitStream &bs, VvcSpsState &sps) {
       1 << (5 + (sps.ctu_size > 32 ? sps_max_luma_transform_size_64_flag : 0));
   sps.transform_skip_enabled_flag = reader.flag() != 0;
   if (sps.transform_skip_enabled_flag) {
-    (void)reader.uvlc();
+    sps.log2_max_transform_skip_block_size =
+        static_cast<int>(reader.uvlc()) + 2;
     sps.bdpcm_enabled_flag = reader.flag() != 0;
   }
 
@@ -788,7 +822,7 @@ int VvcMiniParser::parseSps(BitStream &bs, VvcSpsState &sps) {
   sps.mrl_enabled_flag = reader.flag() != 0;
   sps.mip_enabled_flag = reader.flag() != 0;
   if (sps.chroma_format_idc != 0) {
-    (void)reader.flag(); // sps_cclm_enabled_flag
+    sps.cclm_enabled_flag = reader.flag() != 0;
   }
   if (sps.chroma_format_idc == 1) {
     (void)reader.flag();

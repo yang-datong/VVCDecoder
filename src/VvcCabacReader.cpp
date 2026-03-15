@@ -89,34 +89,46 @@ uint32_t VvcCabacReader::readByte() {
   return *m_ptr++;
 }
 
+uint32_t VvcCabacReader::readByteFlag(bool flag) {
+  if (!flag) return 0;
+  return readByte();
+}
+
 int VvcCabacReader::decodeBin(VvcCabacContextModel &ctx) {
+  unsigned bin = 0;
   unsigned lps = 0;
-  unsigned mps = 0;
-  ctx.lpsMps(m_range, lps, mps);
+  uint32_t range = m_range;
+  uint32_t value = m_value;
+  int32_t bits_needed = m_bits_needed;
 
-  uint32_t range = m_range - lps;
+  ctx.lpsMps(range, lps, bin);
+
+  range -= lps;
   const uint32_t scaled_range = range << 7;
-  unsigned bin = mps;
 
-  if (m_value >= scaled_range) {
-    bin ^= 1;
-    m_value -= scaled_range;
-    const int num_bits = VvcCabacContextModel::renormBitsLps(lps);
-    m_value <<= num_bits;
-    range = lps << num_bits;
-    m_bits_needed += num_bits;
-  } else if (range < 256) {
-    m_value <<= 1;
-    range <<= 1;
-    m_bits_needed += 1;
-  }
+  const int b = ~((static_cast<int>(value) - static_cast<int>(scaled_range)) >> 31);
+  const int a = ~b & ((static_cast<int>(range) - 256) >> 31);
+  const int num_bits =
+      (a & 1) | (b & VvcCabacContextModel::renormBitsLps(lps));
 
-  if (m_bits_needed >= 0) {
-    m_value += readByte() << m_bits_needed;
-    m_bits_needed -= 8;
-  }
+  value -= static_cast<uint32_t>(b & static_cast<int>(scaled_range));
+  value <<= num_bits;
+
+  range &= ~static_cast<uint32_t>(b);
+  range |= static_cast<uint32_t>(b & static_cast<int>(lps));
+  range <<= num_bits;
+
+  bin ^= static_cast<unsigned>(b);
+  bin &= 1u;
+
+  bits_needed += num_bits & (a | b);
+  const int c = ~(bits_needed >> 31);
+  value += readByteFlag((c & 1) != 0) << (bits_needed & 31);
+  bits_needed -= c & 8;
 
   m_range = range;
+  m_value = value;
+  m_bits_needed = bits_needed;
   ctx.update(bin);
   return static_cast<int>(bin);
 }
@@ -135,6 +147,44 @@ int VvcCabacReader::decodeBypass() {
 
   m_value -= scaled_range;
   return 1;
+}
+
+uint32_t VvcCabacReader::decodeBinsEP(int num_bins) {
+  if (num_bins <= 0) return 0;
+  uint32_t bins = 0;
+  for (int i = 0; i < num_bins; ++i) {
+    bins = (bins << 1) | static_cast<uint32_t>(decodeBypass() & 1);
+  }
+  return bins;
+}
+
+uint32_t VvcCabacReader::decodeRemAbsEP(unsigned go_rice_par, unsigned cutoff,
+                                        int max_log2_tr_dynamic_range) {
+  unsigned prefix = 0;
+  {
+    const unsigned max_prefix =
+        32u - static_cast<unsigned>(max_log2_tr_dynamic_range);
+    unsigned code_word = 0;
+    do {
+      prefix++;
+      code_word = static_cast<unsigned>(decodeBypass() & 1);
+    } while (code_word && prefix < max_prefix);
+    prefix -= 1u - code_word;
+  }
+
+  unsigned length = go_rice_par;
+  unsigned offset = 0;
+  if (prefix < cutoff) {
+    offset = prefix << go_rice_par;
+  } else {
+    offset = (((1u << (prefix - cutoff)) + cutoff - 1u) << go_rice_par);
+    length +=
+        (prefix == (32u - static_cast<unsigned>(max_log2_tr_dynamic_range)))
+            ? static_cast<unsigned>(max_log2_tr_dynamic_range) - go_rice_par
+            : prefix - cutoff;
+  }
+
+  return offset + decodeBinsEP(static_cast<int>(length));
 }
 
 int VvcCabacReader::decodeTerminate() {

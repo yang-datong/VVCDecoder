@@ -4,8 +4,12 @@
 #include "Image.hpp"
 #include "Nalu.hpp"
 #include "VvcCabacReader.hpp"
+#include "VvcIntraCuProbe.hpp"
 #include "VvcMiniParser.hpp"
+#include "VvcReconstructionProbe.hpp"
+#include "VvcResidualProbe.hpp"
 #include "VvcSplitProbe.hpp"
+#include "VvcTransformTreeProbe.hpp"
 #include <array>
 #include <cstdlib>
 #include <iomanip>
@@ -221,6 +225,18 @@ static int parseVvcBitstream(const string &filePath) {
         VvcSplitProbeResult split_probe_result;
         bool split_probe_ok = false;
         std::string split_probe_error;
+        VvcIntraCuProbeResult intra_probe_result;
+        bool intra_probe_ok = false;
+        std::string intra_probe_error;
+        VvcTransformTreeProbeResult transform_probe_result;
+        bool transform_probe_ok = false;
+        std::string transform_probe_error;
+        VvcResidualProbeResult residual_probe_result;
+        bool residual_probe_ok = false;
+        std::string residual_probe_error;
+        VvcReconstructionProbeResult reconstruction_probe_result;
+        bool reconstruction_probe_ok = false;
+        std::string reconstruction_probe_error;
         if (frame_summary.slice_type == I_SLICE &&
             frame_summary.sps_id >= 0 &&
             frame_summary.sps_id < static_cast<int>(spss.size()) &&
@@ -231,6 +247,61 @@ static int parseVvcBitstream(const string &filePath) {
                   frame_summary.slice_type, frame_summary.slice_qp_y,
                   split_probe_result) == 0) {
             split_probe_ok = split_probe_result.valid;
+            if (split_probe_ok) {
+              VvcIntraCuProbe intra_probe;
+              if (intra_probe.probeFirstCuIntraSyntax(
+                      cabac_reader, spss[frame_summary.sps_id],
+                      frame_summary.slice_type, frame_summary.slice_qp_y,
+                      split_probe_result, intra_probe_result) == 0) {
+                intra_probe_ok = intra_probe_result.valid;
+                if (intra_probe_ok) {
+                  VvcTransformTreeProbe transform_probe;
+                  if (transform_probe.probeFirstTransformUnit(
+                          cabac_reader, spss[frame_summary.sps_id],
+                          frame_summary.slice_type, frame_summary.slice_qp_y,
+                          split_probe_result, intra_probe_result,
+                          transform_probe_result) == 0) {
+                    transform_probe_ok = transform_probe_result.valid;
+                    if (transform_probe_ok) {
+                      VvcResidualProbe residual_probe;
+                      if (residual_probe.probeFirstTuResidualSyntax(
+                              cabac_reader, spss[frame_summary.sps_id],
+                              frame_summary.slice_type,
+                              frame_summary.slice_qp_y,
+                              frame_summary.dep_quant_used_flag,
+                              frame_summary.sign_data_hiding_used_flag,
+                              transform_probe_result, residual_probe_result) ==
+                          0) {
+                        residual_probe_ok = residual_probe_result.valid;
+                        if (residual_probe_ok) {
+                          VvcReconstructionProbe reconstruction_probe;
+                          if (reconstruction_probe
+                                  .reconstructFirstLumaTransformBlock(
+                                      spss[frame_summary.sps_id],
+                                      frame_summary.slice_qp_y,
+                                      frame_summary.dep_quant_used_flag,
+                                      intra_probe_result, transform_probe_result,
+                                      residual_probe_result,
+                                      reconstruction_probe_result) == 0) {
+                            reconstruction_probe_ok =
+                                reconstruction_probe_result.valid;
+                          } else {
+                            reconstruction_probe_error =
+                                reconstruction_probe.lastError();
+                          }
+                        }
+                      } else {
+                        residual_probe_error = residual_probe.lastError();
+                      }
+                    }
+                  } else {
+                    transform_probe_error = transform_probe.lastError();
+                  }
+                }
+              } else {
+                intra_probe_error = intra_probe.lastError();
+              }
+            }
           } else {
             split_probe_error = split_probe.lastError();
           }
@@ -258,6 +329,88 @@ static int parseVvcBitstream(const string &filePath) {
                << " split_leaf=" << split_probe_result.leaf_width << "x"
                << split_probe_result.leaf_height
                << " split_bins=" << split_probe_result.decisions;
+          if (intra_probe_ok) {
+            cout << " first_cu_luma=" << intra_probe_result.intra_luma_mode
+                 << " first_cu_src=" << intra_probe_result.intra_luma_source
+                 << " first_cu_mip=" << static_cast<int>(intra_probe_result.mip_flag)
+                 << " first_cu_mrl=" << intra_probe_result.multi_ref_idx
+                 << " first_cu_isp=" << intra_probe_result.isp_mode;
+            if (intra_probe_result.mip_flag) {
+              cout << " first_cu_mip_tr="
+                   << static_cast<int>(intra_probe_result.mip_transposed_flag);
+            } else {
+              cout << " first_cu_mpm={"
+                   << intra_probe_result.mpm_candidates[0] << ","
+                   << intra_probe_result.mpm_candidates[1] << ","
+                   << intra_probe_result.mpm_candidates[2] << ","
+                   << intra_probe_result.mpm_candidates[3] << ","
+                   << intra_probe_result.mpm_candidates[4] << ","
+                   << intra_probe_result.mpm_candidates[5] << "}";
+            }
+            if (transform_probe_ok) {
+              cout << " first_tu=" << transform_probe_result.first_tu_width
+                   << "x" << transform_probe_result.first_tu_height
+                   << " first_tu_depth=" << transform_probe_result.first_tu_depth
+                   << " first_tu_cbf_y=" << transform_probe_result.first_tu_cbf_y
+                   << " first_tu_cbf_cb=" << transform_probe_result.first_tu_cbf_cb
+                   << " first_tu_cbf_cr=" << transform_probe_result.first_tu_cbf_cr;
+              if (transform_probe_result.first_tu_ts_flag_coded) {
+                cout << " first_tu_ts=" << transform_probe_result.first_tu_ts_flag;
+              }
+              if (transform_probe_result.first_tu_last_sig_x >= 0 &&
+                  transform_probe_result.first_tu_last_sig_y >= 0) {
+                cout << " first_tu_last_sig=("
+                     << transform_probe_result.first_tu_last_sig_x << ","
+                     << transform_probe_result.first_tu_last_sig_y << ")";
+              }
+              if (residual_probe_ok) {
+                cout << " first_tu_scan_pos_last="
+                     << residual_probe_result.scan_pos_last
+                     << " first_tu_last_subset="
+                     << residual_probe_result.last_subset_id
+                     << " first_tu_sig_groups="
+                     << residual_probe_result.sig_group_count
+                     << " first_tu_first_sig_subset="
+                     << residual_probe_result.first_sig_subset_id
+                     << " first_tu_nonzero="
+                     << residual_probe_result.non_zero_coeffs
+                     << " first_tu_abs_sum="
+                     << residual_probe_result.abs_sum
+                     << " first_tu_max_abs="
+                     << residual_probe_result.max_abs_level
+                     << " first_tu_last_coeff="
+                     << residual_probe_result.last_coeff_value;
+                if (reconstruction_probe_ok) {
+                  cout << " first_tu_pred_dc="
+                       << reconstruction_probe_result.pred_dc
+                       << " first_tu_resi_min="
+                       << reconstruction_probe_result.residual_min
+                       << " first_tu_resi_max="
+                       << reconstruction_probe_result.residual_max
+                       << " first_tu_recon_min="
+                       << reconstruction_probe_result.recon_min
+                       << " first_tu_recon_max="
+                       << reconstruction_probe_result.recon_max
+                       << " first_tu_recon_sum="
+                       << reconstruction_probe_result.recon_sum
+                       << " first_tu_recon_tl="
+                       << reconstruction_probe_result.recon_top_left
+                       << " first_tu_recon_c="
+                       << reconstruction_probe_result.recon_center
+                       << " first_tu_recon_br="
+                       << reconstruction_probe_result.recon_bottom_right;
+                } else if (!reconstruction_probe_error.empty()) {
+                  cout << " recon_probe_err=" << reconstruction_probe_error;
+                }
+              } else if (!residual_probe_error.empty()) {
+                cout << " residual_probe_err=" << residual_probe_error;
+              }
+            } else if (!transform_probe_error.empty()) {
+              cout << " transform_probe_err=" << transform_probe_error;
+            }
+          } else if (!intra_probe_error.empty()) {
+            cout << " intra_probe_err=" << intra_probe_error;
+          }
         } else if (!split_probe_error.empty()) {
           cout << " split_probe_err=" << split_probe_error;
         }
