@@ -420,28 +420,26 @@ bool parseSliceHeaderTail(VvcBitReader &reader, const Nalu &nalu,
   if (sps.use_alf && !pps.alf_info_in_ph_flag) {
     summary.alf_enabled_flag = reader.flag() != 0;
     if (summary.alf_enabled_flag) {
-      const int num_alf_aps_ids_luma = static_cast<int>(reader.code(3));
-      for (int i = 0; i < num_alf_aps_ids_luma; ++i) {
+      summary.num_alf_aps_ids_luma = static_cast<int>(reader.code(3));
+      for (int i = 0; i < summary.num_alf_aps_ids_luma; ++i) {
         reader.code(3);
       }
 
-      bool alf_cb_enabled_flag = false;
-      bool alf_cr_enabled_flag = false;
       if (sps.chroma_format_idc != 0) {
-        alf_cb_enabled_flag = reader.flag() != 0;
-        alf_cr_enabled_flag = reader.flag() != 0;
+        summary.alf_cb_enabled_flag = reader.flag() != 0;
+        summary.alf_cr_enabled_flag = reader.flag() != 0;
       }
-      if (alf_cb_enabled_flag || alf_cr_enabled_flag) {
+      if (summary.alf_cb_enabled_flag || summary.alf_cr_enabled_flag) {
         reader.code(3);
       }
 
       if (sps.use_ccalf) {
-        const bool alf_cc_cb_enabled_flag = reader.flag() != 0;
-        if (alf_cc_cb_enabled_flag) {
+        summary.alf_cc_cb_enabled_flag = reader.flag() != 0;
+        if (summary.alf_cc_cb_enabled_flag) {
           reader.code(3);
         }
-        const bool alf_cc_cr_enabled_flag = reader.flag() != 0;
-        if (alf_cc_cr_enabled_flag) {
+        summary.alf_cc_cr_enabled_flag = reader.flag() != 0;
+        if (summary.alf_cc_cr_enabled_flag) {
           reader.code(3);
         }
       }

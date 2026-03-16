@@ -9,6 +9,7 @@ class VvcCabacContextModel {
   VvcCabacContextModel();
 
   void init(int qp, uint8_t init_idc);
+  void setLog2WindowSize(uint8_t log2_window_size);
   void update(unsigned bin);
   void lpsMps(unsigned range, unsigned &lps, unsigned &mps) const;
   static uint8_t renormBitsLps(unsigned lps);

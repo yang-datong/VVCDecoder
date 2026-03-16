@@ -153,6 +153,11 @@ struct VvcFrameHeaderSummary {
   bool inter_slice_allowed_flag = false;
   bool intra_slice_allowed_flag = true;
   bool alf_enabled_flag = false;
+  int num_alf_aps_ids_luma = 0;
+  bool alf_cb_enabled_flag = false;
+  bool alf_cr_enabled_flag = false;
+  bool alf_cc_cb_enabled_flag = false;
+  bool alf_cc_cr_enabled_flag = false;
   bool sao_luma_used_flag = false;
   bool sao_chroma_used_flag = false;
   bool dep_quant_used_flag = false;

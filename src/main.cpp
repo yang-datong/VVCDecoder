@@ -4,6 +4,7 @@
 #include "Image.hpp"
 #include "Nalu.hpp"
 #include "VvcCabacReader.hpp"
+#include "VvcCtuPrefixProbe.hpp"
 #include "VvcIntraCuProbe.hpp"
 #include "VvcMiniParser.hpp"
 #include "VvcReconstructionProbe.hpp"
@@ -30,6 +31,12 @@ static const char *findMaxVclEnv() {
   const char *value = std::getenv("VVC_MAX_VCL");
   if (value && *value) return value;
   return std::getenv("HEVC_MAX_VCL");
+}
+
+static int findPayloadRbspDeltaEnv() {
+  const char *value = std::getenv("VVC_PAYLOAD_RBSP_DELTA");
+  if (value && *value) return std::atoi(value);
+  return 0;
 }
 
 struct VvcBitstreamSummary {
@@ -68,6 +75,7 @@ static int parseVvcBitstream(const string &filePath) {
   int number = 0;
   int parsed_vcl_count = 0;
   int max_parsed_vcl = 0;
+  const int payload_rbsp_delta = findPayloadRbspDeltaEnv();
   if (const char *max_vcl_env = findMaxVclEnv()) {
     const int parsed = std::atoi(max_vcl_env);
     if (parsed > 0) max_parsed_vcl = parsed;
@@ -200,21 +208,21 @@ static int parseVvcBitstream(const string &filePath) {
           prev_tid0_poc_valid = true;
         }
 
-        if (frame_summary.payload_rbsp_byte_offset < 0 ||
-            frame_summary.payload_rbsp_byte_offset >= rbsp.len) {
+        const int cabac_payload_rbsp_offset =
+            frame_summary.payload_rbsp_byte_offset + payload_rbsp_delta;
+        if (cabac_payload_rbsp_offset < 0 ||
+            cabac_payload_rbsp_offset >= rbsp.len) {
           cerr << "VVC CABAC payload offset error on NAL[" << number << "]"
                << ": rbsp payload offset="
-               << frame_summary.payload_rbsp_byte_offset
+               << cabac_payload_rbsp_offset
                << ", rbsp len=" << rbsp.len << endl;
           reader.close();
           return -1;
         }
 
         VvcCabacReader cabac_reader;
-        const uint8_t *cabac_payload =
-            rbsp.buf + frame_summary.payload_rbsp_byte_offset;
-        const int cabac_payload_len =
-            rbsp.len - frame_summary.payload_rbsp_byte_offset;
+        const uint8_t *cabac_payload = rbsp.buf + cabac_payload_rbsp_offset;
+        const int cabac_payload_len = rbsp.len - cabac_payload_rbsp_offset;
         if (cabac_reader.init(cabac_payload, cabac_payload_len) != 0) {
           cerr << "VVC CABAC init error on NAL[" << number
                << "]: " << cabac_reader.lastError() << endl;
@@ -225,6 +233,9 @@ static int parseVvcBitstream(const string &filePath) {
         VvcSplitProbeResult split_probe_result;
         bool split_probe_ok = false;
         std::string split_probe_error;
+        VvcCtuPrefixProbeResult ctu_prefix_result;
+        bool ctu_prefix_ok = false;
+        std::string ctu_prefix_error;
         VvcIntraCuProbeResult intra_probe_result;
         bool intra_probe_ok = false;
         std::string intra_probe_error;
@@ -241,69 +252,84 @@ static int parseVvcBitstream(const string &filePath) {
             frame_summary.sps_id >= 0 &&
             frame_summary.sps_id < static_cast<int>(spss.size()) &&
             spss[frame_summary.sps_id].valid) {
-          VvcSplitProbe split_probe;
-          if (split_probe.probeFirstCuSplitPath(
-                  cabac_reader, spss[frame_summary.sps_id], parsed_picture_header,
+          VvcCtuPrefixProbe ctu_prefix_probe;
+          if (ctu_prefix_probe.consumeFirstCtuPrefix(
+                  cabac_reader, spss[frame_summary.sps_id],
                   frame_summary.slice_type, frame_summary.slice_qp_y,
-                  split_probe_result) == 0) {
-            split_probe_ok = split_probe_result.valid;
-            if (split_probe_ok) {
-              VvcIntraCuProbe intra_probe;
-              if (intra_probe.probeFirstCuIntraSyntax(
+                  frame_summary, ctu_prefix_result) == 0) {
+            ctu_prefix_ok = ctu_prefix_result.valid;
+            if (ctu_prefix_ok) {
+              VvcSplitProbe split_probe;
+              if (split_probe.probeFirstCuSplitPath(
                       cabac_reader, spss[frame_summary.sps_id],
-                      frame_summary.slice_type, frame_summary.slice_qp_y,
-                      split_probe_result, intra_probe_result) == 0) {
-                intra_probe_ok = intra_probe_result.valid;
-                if (intra_probe_ok) {
-                  VvcTransformTreeProbe transform_probe;
-                  if (transform_probe.probeFirstTransformUnit(
+                      parsed_picture_header, frame_summary.slice_type,
+                      frame_summary.slice_qp_y, split_probe_result) == 0) {
+                split_probe_ok = split_probe_result.valid;
+                if (split_probe_ok) {
+                  VvcIntraCuProbe intra_probe;
+                  if (intra_probe.probeFirstCuIntraSyntax(
                           cabac_reader, spss[frame_summary.sps_id],
                           frame_summary.slice_type, frame_summary.slice_qp_y,
-                          split_probe_result, intra_probe_result,
-                          transform_probe_result) == 0) {
-                    transform_probe_ok = transform_probe_result.valid;
-                    if (transform_probe_ok) {
-                      VvcResidualProbe residual_probe;
-                      if (residual_probe.probeFirstTuResidualSyntax(
+                          split_probe_result, intra_probe_result) == 0) {
+                    intra_probe_ok = intra_probe_result.valid;
+                    if (intra_probe_ok) {
+                      VvcTransformTreeProbe transform_probe;
+                      if (transform_probe.probeFirstTransformUnit(
                               cabac_reader, spss[frame_summary.sps_id],
-                              frame_summary.slice_type,
-                              frame_summary.slice_qp_y,
-                              frame_summary.dep_quant_used_flag,
-                              frame_summary.sign_data_hiding_used_flag,
-                              transform_probe_result, residual_probe_result) ==
-                          0) {
-                        residual_probe_ok = residual_probe_result.valid;
-                        if (residual_probe_ok) {
-                          VvcReconstructionProbe reconstruction_probe;
-                          if (reconstruction_probe
-                                  .reconstructFirstLumaTransformBlock(
-                                      spss[frame_summary.sps_id],
-                                      frame_summary.slice_qp_y,
-                                      frame_summary.dep_quant_used_flag,
-                                      intra_probe_result, transform_probe_result,
-                                      residual_probe_result,
-                                      reconstruction_probe_result) == 0) {
-                            reconstruction_probe_ok =
-                                reconstruction_probe_result.valid;
+                              frame_summary.slice_type, frame_summary.slice_qp_y,
+                              split_probe_result, intra_probe_result,
+                              transform_probe_result) == 0) {
+                        transform_probe_ok = transform_probe_result.valid;
+                        if (transform_probe_ok) {
+                          VvcResidualProbe residual_probe;
+                          if (residual_probe.probeFirstTuResidualSyntax(
+                                  cabac_reader, spss[frame_summary.sps_id],
+                                  frame_summary.slice_type,
+                                  frame_summary.slice_qp_y,
+                                  frame_summary.dep_quant_used_flag,
+                                  frame_summary.sign_data_hiding_used_flag,
+                                  transform_probe_result,
+                                  residual_probe_result) == 0) {
+                            residual_probe_ok = residual_probe_result.valid;
+                            if (residual_probe_ok) {
+                              VvcReconstructionProbe reconstruction_probe;
+                              if (reconstruction_probe
+                                      .reconstructFirstLumaTransformBlock(
+                                          spss[frame_summary.sps_id],
+                                          frame_summary.slice_qp_y,
+                                          frame_summary.dep_quant_used_flag,
+                                          intra_probe_result,
+                                          transform_probe_result,
+                                          residual_probe_result,
+                                          reconstruction_probe_result) == 0) {
+                                reconstruction_probe_ok =
+                                    reconstruction_probe_result.valid;
+                              } else {
+                                reconstruction_probe_error =
+                                    reconstruction_probe.lastError();
+                              }
+                            }
                           } else {
-                            reconstruction_probe_error =
-                                reconstruction_probe.lastError();
+                            residual_probe_error = residual_probe.lastError();
                           }
                         }
                       } else {
-                        residual_probe_error = residual_probe.lastError();
+                        transform_probe_error = transform_probe.lastError();
                       }
                     }
                   } else {
-                    transform_probe_error = transform_probe.lastError();
+                    intra_probe_error = intra_probe.lastError();
                   }
                 }
               } else {
-                intra_probe_error = intra_probe.lastError();
+                split_probe_error = split_probe.lastError();
               }
             }
           } else {
-            split_probe_error = split_probe.lastError();
+            ctu_prefix_error = ctu_prefix_probe.lastError();
+          }
+          if (!ctu_prefix_ok && ctu_prefix_error.empty()) {
+            ctu_prefix_error = "First-CTU prefix probe did not produce a valid result";
           }
         }
 
@@ -323,7 +349,36 @@ static int parseVvcBitstream(const string &filePath) {
              << static_cast<int>(frame_summary.intra_slice_allowed_flag)
              << " noprior="
              << static_cast<int>(frame_summary.no_output_of_prior_pics_flag)
-             << " payload_byte=" << frame_summary.payload_byte_offset;
+             << " payload_byte=" << frame_summary.payload_byte_offset
+             << " payload_rbsp=" << frame_summary.payload_rbsp_byte_offset;
+        if (payload_rbsp_delta != 0) {
+          cout << " payload_rbsp_delta=" << payload_rbsp_delta
+               << " payload_rbsp_used=" << cabac_payload_rbsp_offset;
+        }
+        if (ctu_prefix_ok) {
+          cout << " first_ctu_prefix_bins=" << ctu_prefix_result.bins_consumed
+               << " first_ctu_sao_bins=" << ctu_prefix_result.sao_bins
+               << " first_ctu_alf_bins=" << ctu_prefix_result.alf_bins
+               << " first_ctu_sao="
+               << static_cast<int>(ctu_prefix_result.sao_consumed)
+               << " first_ctu_sao_y=" << ctu_prefix_result.sao_luma_mode
+               << " first_ctu_sao_c=" << ctu_prefix_result.sao_chroma_mode
+               << " first_ctu_sao_y_off={"
+               << ctu_prefix_result.sao_luma_offsets[0] << ","
+               << ctu_prefix_result.sao_luma_offsets[1] << ","
+               << ctu_prefix_result.sao_luma_offsets[2] << ","
+               << ctu_prefix_result.sao_luma_offsets[3] << "}"
+               << " first_ctu_sao_y_band="
+               << ctu_prefix_result.sao_luma_band_position
+               << " first_ctu_alf="
+               << static_cast<int>(ctu_prefix_result.alf_consumed)
+               << " first_ctu_alf_y="
+               << static_cast<int>(ctu_prefix_result.alf_luma_enabled)
+               << " first_ctu_alf_t="
+               << static_cast<int>(ctu_prefix_result.alf_use_temporal);
+        } else if (!ctu_prefix_error.empty()) {
+          cout << " ctu_prefix_err=" << ctu_prefix_error;
+        }
         if (split_probe_ok) {
           cout << " split_path=" << split_probe_result.path
                << " split_leaf=" << split_probe_result.leaf_width << "x"

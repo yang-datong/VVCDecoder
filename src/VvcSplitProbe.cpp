@@ -39,10 +39,11 @@ struct SplitConstraints {
 template <size_t N>
 void initContextArray(
     std::array<VvcCabacContextModel, N> &ctxs, int qp, int slice_type,
-    const std::array<std::array<uint8_t, N>, 3> &init_table) {
+    const std::array<std::array<uint8_t, N>, 4> &init_table) {
   const int st = slice_type < 0 ? 0 : (slice_type > 2 ? 2 : slice_type);
   for (size_t i = 0; i < N; ++i) {
     ctxs[i].init(qp, init_table[st][i]);
+    ctxs[i].setLog2WindowSize(init_table[3][i]);
   }
 }
 
@@ -53,25 +54,29 @@ struct SplitContexts {
   std::array<VvcCabacContextModel, 4> split_12_flag;
 
   void init(int qp, int slice_type) {
-    static const std::array<std::array<uint8_t, 9>, 3> kSplitFlagInit = {{
+    static const std::array<std::array<uint8_t, 9>, 4> kSplitFlagInit = {{
         {{18, 27, 15, 18, 28, 45, 26, 7, 23}},
         {{11, 35, 53, 12, 6, 30, 13, 15, 31}},
         {{19, 28, 38, 27, 29, 38, 20, 30, 31}},
+        {{12, 13, 8, 8, 13, 12, 5, 9, 9}},
     }};
-    static const std::array<std::array<uint8_t, 6>, 3> kSplitQtInit = {{
+    static const std::array<std::array<uint8_t, 6>, 4> kSplitQtInit = {{
         {{26, 36, 38, 18, 34, 21}},
         {{20, 14, 23, 18, 19, 6}},
         {{27, 6, 15, 25, 19, 37}},
+        {{0, 8, 8, 12, 12, 8}},
     }};
-    static const std::array<std::array<uint8_t, 5>, 3> kSplitHvInit = {{
+    static const std::array<std::array<uint8_t, 5>, 4> kSplitHvInit = {{
         {{43, 42, 37, 42, 44}},
         {{43, 35, 37, 34, 52}},
         {{43, 42, 29, 27, 44}},
+        {{9, 8, 9, 8, 5}},
     }};
-    static const std::array<std::array<uint8_t, 4>, 3> kSplit12Init = {{
+    static const std::array<std::array<uint8_t, 4>, 4> kSplit12Init = {{
         {{28, 29, 28, 29}},
         {{43, 37, 21, 22}},
         {{36, 45, 36, 45}},
+        {{12, 13, 12, 13}},
     }};
 
     initContextArray(split_flag, qp, slice_type, kSplitFlagInit);

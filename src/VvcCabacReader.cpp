@@ -34,6 +34,15 @@ void VvcCabacContextModel::init(int qp, uint8_t init_idc) {
   m_state1 = static_cast<uint16_t>(p1 & kMask1);
 }
 
+void VvcCabacContextModel::setLog2WindowSize(uint8_t log2_window_size) {
+  m_rate0 = 2 + ((log2_window_size >> 2) & 3);
+  m_rate1 = 3 + m_rate0 + (log2_window_size & 3);
+  m_rate0 += 5;
+  m_rate1 += 1;
+  m_delta0[0] = static_cast<uint16_t>(0xFFFFu >> (16 - m_rate0));
+  m_delta1[0] = static_cast<uint16_t>(0xFFFFu >> (16 - m_rate1));
+}
+
 void VvcCabacContextModel::update(unsigned bin) {
   int delta0 = static_cast<int>(m_delta0[bin]) - static_cast<int>(m_state0);
   int delta1 = static_cast<int>(m_delta1[bin]) - static_cast<int>(m_state1);
